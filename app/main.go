@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"bufio"
 )
 
 // Ensures gofmt doesn't remove the "fmt" and "os" imports in stage 1 (feel free to remove this!)
