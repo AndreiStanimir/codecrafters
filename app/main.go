@@ -19,14 +19,22 @@ func main() {
 		command := words[0]
 		// fmt.Fprintf(os.Stderr, "You entered: %s\n", command)
 		rest := words[1:]
-		if command == "exit" {
+		switch command {
+		case "exit":
 			return
-		}
-		if command == "echo" {
+		case "echo":
 			fmt.Fprintf(os.Stdout, "%s\n", strings.Join(rest, " "))
-		} else {
+		case "type":
+			switch rest[0] {
+			case "exit", "echo", "type":
+				fmt.Fprintf(os.Stdout, "%s is a shell builtin\n", rest[0])
+			default:
+				fmt.Fprintf(os.Stdout, "%s: not found\n", rest[0])
+			}
+		default:
 			fmt.Fprintf(os.Stdout, "%s: command not found", command)
 			fmt.Fprint(os.Stdout, "\n")
+
 		}
 	}
 }
