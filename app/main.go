@@ -17,5 +17,5 @@ func main() {
 	fmt.Fprint(os.Stdout, "$ ")
 	command, err := bufio.NewReader(os.Stdin).ReadString('\n')
 
-	fmt.Fprintf("%v: command not found", command)
+	fmt.Fprintf(os.Stdout, "%s: command not found. %s", command, err)
 }
