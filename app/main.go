@@ -44,7 +44,7 @@ func main() {
 			fmt.Fprintf(os.Stdout, "%s\n", strings.Join(rest, " "))
 		case "type":
 			switch rest[0] {
-			case "exit", "echo", "type":
+			case "exit", "echo", "type", "pwd":
 				fmt.Fprintf(os.Stdout, "%s is a shell builtin\n", rest[0])
 			default:
 				PATH := os.Getenv("PATH")
