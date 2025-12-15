@@ -127,7 +127,10 @@ func splitWithQuotes(s string) []string {
 	inQuote := false
 	inDoubleQuote := false
 	for i := 0; i < len(s); i++ {
-		if s[i] == '"' {
+		if s[i] == '\\' && i+1 < len(s) && (!inQuote && !inDoubleQuote) {
+			current += string(s[i+1])
+			i++
+		} else if s[i] == '"' {
 			inDoubleQuote = !inDoubleQuote
 		} else if s[i] == '\'' {
 			if !inDoubleQuote {
