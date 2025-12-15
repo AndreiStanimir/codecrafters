@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-
-	"github.com/samber/lo"
 )
 
 func IsExecAny(mode os.FileMode) bool {
@@ -46,54 +44,61 @@ type Word struct {
 }
 
 func SanitizeSingleQotesChannel(input string, wordsChan chan Word) {
-	wordsChan = make(chan Word)
+	// Don't reassign wordsChan here!
 	if ind := strings.Index(input, "'"); ind == -1 {
+		for word := range strings.SplitSeq(standardizeSpaces(input), " ") {
+			wordsChan <- Word{
+				text:  word,
+				typee: Normal,
+			}
+		}
 		return
 	}
 	outside := true
 	for len(input) > 0 {
 		index := strings.Index(input, "'")
 		if index == -1 {
+			// Send any remaining text before returning
+			if len(input) > 0 && outside {
+				wordsChan <- Word{
+					text:  input,
+					typee: Normal,
+				}
+			}
 			return
 		}
+
+		// Send text before the quote if we're outside quotes
+		if index > 0 && outside {
+			wordsChan <- Word{
+				text:  input[:index],
+				typee: Normal,
+			}
+		}
+
 		index2 := strings.Index(input[index+1:], "'")
+		if index2 == -1 {
+			// No closing quote found
+			return
+		}
 
 		typ := Normal
 		if outside {
-			typ = Normal
-		} else {
 			typ = SingleQuote
+		} else {
+			typ = Normal
 		}
 
-		if index+1 < index2 {
-			wordsChan <- Word{
-				text:  input[index+1 : index2],
-				typee: typ,
-			}
+		// Send the text between quotes
+		wordsChan <- Word{
+			text:  input[index+1 : index+1+index2],
+			typee: typ,
 		}
+
 		outside = !outside
-		input = input[index2+1:]
+		input = input[index+1+index2+1:]
 	}
 	return
-	// return strings.ReplaceAll(input, "'", "")
-}
-
-func SanitizeSingleQuotes(input string) chan string {
-	wordsChan := make(chan string)
-	if ind := strings.Index(input, "'"); ind == -1 {
-		return wordsChan
-	}
-	for len(input) > 0 {
-		index := strings.Index(input, "'")
-		if index == -1 {
-			return wordsChan
-		}
-		index2 := strings.Index(input[index+1:], "'")
-		wordsChan <- input[index+1 : index2]
-		input = input[index2+1:]
-	}
-	return wordsChan
-	// return strings.ReplaceAll(input, "'", "")
 }
 
 func ChanToSlice(ch interface{}) interface{} {
@@ -116,67 +121,72 @@ func readEverythingFromChannel(ch chan Word) []Word {
 	return somethings
 }
 
+func splitWithQuotes(s string) []string {
+	var result []string
+	var current string
+	inQuote := false
+
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\'' {
+			inQuote = !inQuote
+			// current += string(s[i])
+		} else if s[i] == ' ' && !inQuote {
+			if current != "" {
+				result = append(result, current)
+				current = ""
+			}
+		} else {
+			current += string(s[i])
+		}
+	}
+	if current != "" {
+		result = append(result, current)
+	}
+	return result
+}
+
 func main() {
 	for {
 		_, err := fmt.Fprint(os.Stdout, "$ ")
 		if err != nil {
 			return
 		}
-		input, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		input = strings.ReplaceAll(input, "''", "")
-		// input = strings.ReplaceAll(input, "'", "\\'")
-		// wordsQuotes := strings.Split(input, "'")
-		// if len(wordsQuotes)>1{
-
-		//}
+		inputOriginal, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		input := strings.ReplaceAll(inputOriginal, "''", "")
 		inputTrimmed := strings.TrimSpace(input)
-		words := strings.Split(inputTrimmed, " ")
-		// command = strings.TrimRight(command, "\n")
+		words := splitWithQuotes(inputTrimmed)
 		command := words[0]
-		// foralsemt.Fprintf(os.Stderr, "You entered: %s\n", command)
+
 		wordsChan := make(chan Word)
 		go func() {
 			SanitizeSingleQotesChannel(inputTrimmed[len(command):], wordsChan)
 			close(wordsChan)
 		}()
-		rest := readEverythingFromChannel(wordsChan)
-		// rest := ChanToSlice(wordsChan).([]Word)
+		rest := words[1:]
+
 		switch command {
 		case "exit":
 			return
 		case "echo":
-			result := ""
-			for _, word := range rest {
-				switch word.typee {
-				case Normal:
-					result += standardizeSpaces(word.text)
-				case SingleQuote:
-					result += word.text
-				}
-			}
+			result := strings.Join(rest, " ")
 			fmt.Fprintf(os.Stdout, "%s\n", result)
 		case "type":
-			switch rest[0].text {
+			switch rest[0] {
 			case "exit", "echo", "type", "pwd", "cd":
 				fmt.Fprintf(os.Stdout, "%s is a shell builtin\n", rest[0])
 			default:
 				PATH := os.Getenv("PATH")
 				found := false
 				for path := range strings.SplitSeq(PATH, ":") {
-					// fmt.Fprintf(os.Stdout, "Searching in %s\n", path)
-
 					files, err := os.ReadDir(path)
 					if err != nil {
-						// fmt.Fprintf(os.Stdout, "%s error: %v\n", path, err)
 						continue
 					}
 					for _, f := range files {
-						// fmt.Fprintf(os.Stdout, "Checking file: %s\n", f.Name())
-						if !f.IsDir() && f.Name() == rest[0].text {
-							// fmt.Fprintln(os.Stdout, "file: %s", f.Name())
+						if !f.IsDir() && f.Name() == rest[0] {
 							info, _ := f.Info()
 							if IsExecAny(info.Mode()) {
-								fmt.Fprintf(os.Stdout, "%s is %s\n", rest[0], filepath.Join(path, rest[0].text))
+								fmt.Fprintf(os.Stdout, "%s is %s\n", rest[0], filepath.Join(path, rest[0]))
 								found = true
 								break
 							}
@@ -197,26 +207,25 @@ func main() {
 			}
 			fmt.Println(dir)
 		case "cd":
-			if rest[0].text == "~" {
-				rest[0].text = os.Getenv("HOME")
+			if rest[0] == "~" {
+				rest[0] = os.Getenv("HOME")
 			}
-			if _, err := os.Stat(rest[0].text); os.IsNotExist(err) {
+			if _, err := os.Stat(rest[0]); os.IsNotExist(err) {
 				fmt.Fprintf(os.Stdout, "cd: %s: No such file or directory\n", rest[0])
 			}
-			os.Chdir(rest[0].text)
+			os.Chdir(rest[0])
 		default:
 			_, err := exec.LookPath(command)
 			if err != nil {
 				fmt.Fprintf(os.Stdout, "%s: command not found\n", command)
 				continue
 			}
-
-			cmd := exec.Command(command, lo.Map(rest, func(item Word, index int) string { return item.text })...)
+			cmd := exec.Command(command, rest...)
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			cmd.Stdin = os.Stdin
 
-			_ = cmd.Run() // ignore error, do not exit shell
+			_ = cmd.Run()
 		}
 	}
 }
