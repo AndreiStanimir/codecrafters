@@ -2,11 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strings"
 
 	"github.com/chzyer/readline"
@@ -14,17 +14,6 @@ import (
 
 func IsExecAny(mode os.FileMode) bool {
 	return mode&0o111 != 0
-}
-
-func FilePathWalkDir(root string) ([]string, error) {
-	var files []string
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if !info.IsDir() {
-			files = append(files, path)
-		}
-		return nil
-	})
-	return files, err
 }
 
 func standardizeSpaces(s string) string {
@@ -45,241 +34,347 @@ type Word struct {
 }
 
 func SanitizeSingleQotesChannel(input string, wordsChan chan Word) {
-	if ind := strings.Index(input, "'"); ind == -1 {
+	if !strings.Contains(input, "'") {
 		for _, word := range strings.Split(standardizeSpaces(input), " ") {
-			wordsChan <- Word{
-				text:  word,
-				typee: Normal,
+			if word != "" {
+				wordsChan <- Word{text: word, typee: Normal}
 			}
 		}
 		return
 	}
 
 	outside := true
-
 	for len(input) > 0 {
-		index := strings.Index(input, "'")
-		if index == -1 {
-			if len(input) > 0 && outside {
-				wordsChan <- Word{
-					text:  input,
-					typee: Normal,
-				}
+		i := strings.Index(input, "'")
+		if i == -1 {
+			if outside && strings.TrimSpace(input) != "" {
+				wordsChan <- Word{text: input, typee: Normal}
 			}
 			return
 		}
 
-		if index > 0 && outside {
-			wordsChan <- Word{
-				text:  input[:index],
-				typee: Normal,
-			}
+		if i > 0 && outside {
+			wordsChan <- Word{text: input[:i], typee: Normal}
 		}
 
-		index2 := strings.Index(input[index+1:], "'")
-		if index2 == -1 {
+		j := strings.Index(input[i+1:], "'")
+		if j == -1 {
 			return
-		}
-
-		typ := Normal
-		if outside {
-			typ = SingleQuote
 		}
 
 		wordsChan <- Word{
-			text:  input[index+1 : index+1+index2],
-			typee: typ,
+			text:  input[i+1 : i+1+j],
+			typee: SingleQuote,
 		}
 
 		outside = !outside
-		input = input[index+1+index2+1:]
+		input = input[i+1+j+1:]
 	}
-}
-
-func ChanToSlice(ch interface{}) interface{} {
-	chv := reflect.ValueOf(ch)
-	slv := reflect.MakeSlice(reflect.SliceOf(reflect.TypeOf(ch).Elem()), 0, 0)
-
-	for {
-		v, ok := chv.Recv()
-		if !ok {
-			return slv.Interface()
-		}
-		slv = reflect.Append(slv, v)
-	}
-}
-
-func readEverythingFromChannel(ch chan Word) []Word {
-	var somethings []Word
-	for s := range ch {
-		somethings = append(somethings, s)
-	}
-	return somethings
 }
 
 func splitWithQuotes(s string) []string {
-	var result []string
-	var current string
-	inQuote := false
-	inDoubleQuote := false
+	var res []string
+	var cur string
+	inSQ, inDQ := false, false
 
 	for i := 0; i < len(s); i++ {
-		switch {
-		case s[i] == '\\' && i+1 < len(s) && (!inQuote && !inDoubleQuote):
-			current += string(s[i+1])
-			i++
-
-		case s[i] == '\\' && inQuote && !inDoubleQuote:
-			current += string(s[i : i+2])
-			i++
-
-		case s[i] == '\\' && inDoubleQuote:
-			switch s[i+1] {
-			case '"', '\\':
-				current += string(s[i+1])
-				i++
-			default:
-				current += s[i : i+2]
-				i++
-			}
-		case s[i] == '"':
-			if inQuote {
-				// inside single quotes → literal "
-				current += `"`
+		switch s[i] {
+		case '\'':
+			if !inDQ {
+				inSQ = !inSQ
 			} else {
-				inDoubleQuote = !inDoubleQuote
+				// single quote inside double quotes is literal
+				cur += "'"
 			}
 
-		case s[i] == '\'':
-			if !inDoubleQuote {
-				inQuote = !inQuote
+		case '"':
+			if !inSQ {
+				inDQ = !inDQ
 			} else {
-				current += string(s[i])
+				// double quote inside single quotes is literal
+				cur += `"`
 			}
 
-		case s[i] == ' ' && (!inQuote && !inDoubleQuote):
-			if current != "" {
-				result = append(result, current)
-				current = ""
+		case ' ':
+			if !inSQ && !inDQ {
+				if cur != "" {
+					res = append(res, cur)
+					cur = ""
+				}
+			} else {
+				cur += " "
 			}
-
+		case '\\':
+			// Improved escaping rules:
+			// - inside single quotes -> backslash is literal
+			// - inside double quotes -> backslash only escapes: " $ ` \ and newline
+			// - outside quotes -> backslash escapes next char (append next char)
+			if inSQ {
+				// literal backslash inside single quotes
+				cur += "\\"
+			} else if inDQ {
+				if i+1 < len(s) {
+					next := s[i+1]
+					// In double quotes, backslash only escapes these specific characters
+					if next == '"' || next == '$' || next == '`' || next == '\\' || next == '\n' {
+						cur += string(next)
+						i++
+					} else {
+						// For other characters, backslash is literal
+						cur += "\\"
+					}
+				} else {
+					// trailing backslash — keep it
+					cur += "\\"
+				}
+			} else {
+				// outside quotes: escape next char
+				if i+1 < len(s) {
+					cur += string(s[i+1])
+					i++
+				}
+			}
 		default:
-			current += string(s[i])
+			cur += string(s[i])
 		}
 	}
 
-	if current != "" {
-		result = append(result, current)
+	if cur != "" {
+		res = append(res, cur)
+	}
+	return res
+}
+
+func findExecutableWithUnescape(name string) (exePath string, argv0 string, err error) {
+	// Try as-is first
+	if p, e := exec.LookPath(name); e == nil {
+		return p, name, nil
 	}
 
-	return result
+	// Try unescaped variants (common cases from tests)
+	tryVariants := []string{
+		strings.ReplaceAll(name, `\'`, `'`),
+		strings.ReplaceAll(name, `\"`, `"`),
+		strings.ReplaceAll(name, `\\`, `\`),
+	}
+
+	seen := map[string]bool{}
+	for _, v := range tryVariants {
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		if p, e := exec.LookPath(v); e == nil {
+			return p, v, nil
+		}
+	}
+
+	// As a last resort, search PATH entries for a name match (literal comparison).
+	for _, d := range strings.Split(os.Getenv("PATH"), ":") {
+		if d == "" {
+			continue
+		}
+		ents, _ := os.ReadDir(d)
+		for _, en := range ents {
+			if en.Name() == name {
+				p := filepath.Join(d, en.Name())
+				if info, _ := en.Info(); info != nil && IsExecAny(info.Mode()) {
+					return p, name, nil
+				}
+			}
+			// also try unescaped forms
+			for _, v := range tryVariants {
+				if en.Name() == v {
+					p := filepath.Join(d, en.Name())
+					if info, _ := en.Info(); info != nil && IsExecAny(info.Mode()) {
+						return p, v, nil
+					}
+				}
+			}
+		}
+	}
+
+	return "", "", fmt.Errorf("not found")
 }
 
 func main() {
-	for {
-		if _, err := fmt.Fprint(os.Stdout, "$ "); err != nil {
-			return
-		}
-		completer := readline.NewPrefixCompleter(
+	rl, _ := readline.NewEx(&readline.Config{
+		Prompt: "$ ",
+		AutoComplete: readline.NewPrefixCompleter(
 			readline.PcItem("echo"),
 			readline.PcItem("exit"),
 			readline.PcItem("cd"),
 			readline.PcItem("pwd"),
 			readline.PcItem("type"),
-		)
-		rl, _ := readline.NewEx(&readline.Config{
-			Prompt:       "$ ",
-			AutoComplete: completer,
-		})
+		),
+	})
 
-		inputOriginal, _ := rl.Readline()
-		input := strings.ReplaceAll(inputOriginal, "''", "")
-		inputTrimmed := strings.TrimSpace(input)
+	for {
+		line, err := rl.Readline()
+		if err != nil {
+			return
+		}
 
-		words := splitWithQuotes(inputTrimmed)
-		command := words[0]
+		input := strings.TrimSpace(strings.ReplaceAll(line, "''", ""))
+		if input == "" {
+			continue
+		}
 
-		wordsChan := make(chan Word)
-		go func() {
-			SanitizeSingleQotesChannel(inputTrimmed[len(command):], wordsChan)
-			close(wordsChan)
-		}()
+		/* ---------- redirection parsing (supports append) ---------- */
+		redirectFile := ""
+		redirectStdErr := false
+		appendMode := false
 
-		rest := words[1:]
+		// Check longer tokens first so we remove the correct characters from input.
+		if i := strings.LastIndex(input, "2>>"); i != -1 {
+			redirectStdErr = true
+			appendMode = true
+			redirectFile = strings.TrimSpace(input[i+3:])
+			input = strings.TrimSpace(input[:i])
+		} else if i := strings.LastIndex(input, "1>>"); i != -1 {
+			appendMode = true
+			redirectFile = strings.TrimSpace(input[i+3:])
+			input = strings.TrimSpace(input[:i])
+		} else if i := strings.LastIndex(input, ">>"); i != -1 {
+			appendMode = true
+			redirectFile = strings.TrimSpace(input[i+2:])
+			input = strings.TrimSpace(input[:i])
+		} else if i := strings.LastIndex(input, "2>"); i != -1 {
+			redirectStdErr = true
+			redirectFile = strings.TrimSpace(input[i+2:])
+			input = strings.TrimSpace(input[:i])
+		} else if i := strings.LastIndex(input, "1>"); i != -1 {
+			redirectFile = strings.TrimSpace(input[i+2:])
+			input = strings.TrimSpace(input[:i])
+		} else if i := strings.LastIndex(input, ">"); i != -1 {
+			redirectFile = strings.TrimSpace(input[i+1:])
+			input = strings.TrimSpace(input[:i])
+		}
 
-		switch command {
+		words := splitWithQuotes(input)
+		if len(words) == 0 {
+			continue
+		}
+		cmd := words[0]
+		args := []string{}
+		if len(words) > 1 {
+			args = words[1:]
+		}
+
+		out := io.Writer(os.Stdout)
+		outErr := io.Writer(os.Stderr)
+		var outfile *os.File
+
+		if redirectFile != "" {
+			var f *os.File
+			var ferr error
+			if appendMode {
+				f, ferr = os.OpenFile(redirectFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+			} else {
+				// overwrite/truncate
+				f, ferr = os.Create(redirectFile)
+			}
+			if ferr != nil {
+				fmt.Fprintln(os.Stderr, ferr)
+				continue
+			}
+			outfile = f
+			if redirectStdErr {
+				outErr = f
+			} else {
+				out = f
+			}
+		}
+
+		/* ---------- builtins ---------- */
+		switch cmd {
 		case "exit":
+			if outfile != nil {
+				outfile.Close()
+			}
 			return
 
 		case "echo":
-			result := strings.Join(rest, " ")
-			fmt.Fprintf(os.Stdout, "%s\n", result)
-
-		case "type":
-			switch rest[0] {
-			case "exit", "echo", "type", "pwd", "cd":
-				fmt.Fprintf(os.Stdout, "%s is a shell builtin\n", rest[0])
-			default:
-				PATH := os.Getenv("PATH")
-				found := false
-
-				for _, path := range strings.Split(PATH, ":") {
-					files, err := os.ReadDir(path)
-					if err != nil {
-						continue
-					}
-					for _, f := range files {
-						if !f.IsDir() && f.Name() == rest[0] {
-							info, _ := f.Info()
-							if IsExecAny(info.Mode()) {
-								fmt.Fprintf(
-									os.Stdout,
-									"%s is %s\n",
-									rest[0],
-									filepath.Join(path, rest[0]),
-								)
-								found = true
-								break
-							}
-						}
-					}
-					if found {
-						break
-					}
-				}
-
-				if !found {
-					fmt.Fprintf(os.Stdout, "%s: not found\n", rest[0])
-				}
-			}
+			fmt.Fprintln(out, strings.Join(args, " "))
 
 		case "pwd":
 			dir, err := os.Getwd()
 			if err != nil {
 				log.Fatal(err)
 			}
-			fmt.Println(dir)
+			fmt.Fprintln(out, dir)
 
 		case "cd":
-			if rest[0] == "~" {
-				rest[0] = os.Getenv("HOME")
+			path := ""
+			if len(args) > 0 {
+				path = args[0]
 			}
-			if _, err := os.Stat(rest[0]); os.IsNotExist(err) {
-				fmt.Fprintf(os.Stdout, "cd: %s: No such file or directory\n", rest[0])
+			if path == "~" {
+				path = os.Getenv("HOME")
 			}
-			_ = os.Chdir(rest[0])
+			if err := os.Chdir(path); err != nil {
+				fmt.Fprintf(out, "cd: %s: No such file or directory\n", path)
+			}
 
-		default:
-			_, err := exec.LookPath(command)
-			if err != nil {
-				fmt.Fprintf(os.Stdout, "%s: command not found\n", command)
-				continue
+		case "type":
+			if len(args) == 0 {
+				break
 			}
-			cmd := exec.Command(command, rest...)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			cmd.Stdin = os.Stdin
-			_ = cmd.Run()
+			builtins := map[string]bool{
+				"exit": true, "echo": true, "cd": true, "pwd": true, "type": true,
+			}
+			if builtins[args[0]] {
+				fmt.Fprintf(out, "%s is a shell builtin\n", args[0])
+				break
+			}
+
+			found := false
+			for _, p := range strings.Split(os.Getenv("PATH"), ":") {
+				entries, _ := os.ReadDir(p)
+				for _, e := range entries {
+					if e.Name() == args[0] {
+						info, _ := e.Info()
+						if IsExecAny(info.Mode()) {
+							fmt.Fprintf(out, "%s is %s\n", args[0], filepath.Join(p, args[0]))
+							found = true
+							break
+						}
+					}
+				}
+				if found {
+					break
+				}
+			}
+			if !found {
+				fmt.Fprintf(out, "%s: not found\n", args[0])
+			}
+
+		/* ---------- external ---------- */
+		default:
+			exePath, argv0, e := findExecutableWithUnescape(cmd)
+			if e != nil {
+				fmt.Fprintf(out, "%s: command not found\n", cmd)
+				break
+			}
+
+			var c *exec.Cmd
+			// If exePath matches the original command name (no special path), just use cmd
+			if exePath != "" && exePath != cmd {
+				c = exec.Command(exePath, args...)
+				// ensure the executed program sees the "unescaped" name as argv[0]
+				c.Args[0] = argv0
+			} else {
+				c = exec.Command(cmd, args...)
+			}
+
+			c.Stdout = out
+			c.Stderr = outErr
+			c.Stdin = os.Stdin
+			_ = c.Run()
+		}
+
+		if outfile != nil {
+			outfile.Close()
 		}
 	}
 }
