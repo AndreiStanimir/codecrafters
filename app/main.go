@@ -33,44 +33,44 @@ type Word struct {
 	typee WordType
 }
 
-func SanitizeSingleQotesChannel(input string, wordsChan chan Word) {
-	if !strings.Contains(input, "'") {
-		for _, word := range strings.Split(standardizeSpaces(input), " ") {
-			if word != "" {
-				wordsChan <- Word{text: word, typee: Normal}
-			}
-		}
-		return
-	}
-
-	outside := true
-	for len(input) > 0 {
-		i := strings.Index(input, "'")
-		if i == -1 {
-			if outside && strings.TrimSpace(input) != "" {
-				wordsChan <- Word{text: input, typee: Normal}
-			}
-			return
-		}
-
-		if i > 0 && outside {
-			wordsChan <- Word{text: input[:i], typee: Normal}
-		}
-
-		j := strings.Index(input[i+1:], "'")
-		if j == -1 {
-			return
-		}
-
-		wordsChan <- Word{
-			text:  input[i+1 : i+1+j],
-			typee: SingleQuote,
-		}
-
-		outside = !outside
-		input = input[i+1+j+1:]
-	}
-}
+//func SanitizeSingleQotesChannel(input string, wordsChan chan Word) {
+//	if !strings.Contains(input, "'") {
+//		for _, word := range strings.Split(standardizeSpaces(input), " ") {
+//			if word != "" {
+//				wordsChan <- Word{text: word, typee: Normal}
+//			}
+//		}
+//		return
+//	}
+//
+//	outside := true
+//	for len(input) > 0 {
+//		i := strings.Index(input, "'")
+//		if i == -1 {
+//			if outside && strings.TrimSpace(input) != "" {
+//				wordsChan <- Word{text: input, typee: Normal}
+//			}
+//			return
+//		}
+//
+//		if i > 0 && outside {
+//			wordsChan <- Word{text: input[:i], typee: Normal}
+//		}
+//
+//		j := strings.Index(input[i+1:], "'")
+//		if j == -1 {
+//			return
+//		}
+//
+//		wordsChan <- Word{
+//			text:  input[i+1 : i+1+j],
+//			typee: SingleQuote,
+//		}
+//
+//		outside = !outside
+//		input = input[i+1+j+1:]
+//	}
+//}
 
 func splitWithQuotes(s string) []string {
 	var res []string
@@ -202,20 +202,76 @@ func notFound(string) []string {
 	return make([]string, 0)
 }
 
-func main() {
-	rl, _ := readline.NewEx(&readline.Config{
-		Prompt: "$ ",
-		AutoComplete: readline.NewPrefixCompleter(
-			readline.PcItem("echo"),
-			readline.PcItem("exit"),
-			readline.PcItem("cd"),
-			readline.PcItem("pwd"),
-			readline.PcItem("type"),
-			readline.PcItemDynamic(notFound),
-		),
-	})
+func getExecutablesInPath() []string {
+	pathEnv, ok := os.LookupEnv("PATH")
+	if !ok {
+		return nil
+	}
 
+	var executables []string
+	seen := make(map[string]bool)
+
+	for _, dir := range strings.Split(pathEnv, ":") {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+
+			// check executable bit
+			if info.Mode()&0o111 != 0 {
+				name := entry.Name()
+				if !seen[name] {
+					seen[name] = true
+					executables = append(executables, name)
+				}
+			}
+		}
+	}
+
+	return executables
+}
+
+func getPrefixExecutable(prefix string, paths []string) string {
+	for _, p := range paths {
+		if strings.HasPrefix(p, prefix) {
+			return p
+		}
+	}
+	return ""
+}
+
+func main() {
+	completer2 := readline.NewPrefixCompleter(
+		readline.PcItem("echo"),
+		readline.PcItem("exit"),
+		readline.PcItem("cd"),
+		readline.PcItem("pwd"),
+		readline.PcItem("type"),
+		readline.PcItemDynamic(notFound),
+	)
 	for {
+		completer := completer2
+		item := readline.PcItemDynamic(func(input string) []string {
+			dynamicExecutables := getExecutablesInPath()
+			return dynamicExecutables
+		})
+		completer2.Children = append(completer2.Children, item)
+
+		rl, _ := readline.NewEx(&readline.Config{
+			Prompt:       "$ ",
+			AutoComplete: completer,
+		})
+
 		line, err := rl.Readline()
 		if err != nil {
 			return
